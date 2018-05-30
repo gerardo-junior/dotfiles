@@ -86,7 +86,7 @@ extract () {
 }
 
 # Output code with highlight
-highlight () { vimcat -c "set syntax=$1" -- $2 }
+highlight () vimcat -c "set syntax=$1" -- $2
 alias ccat="vimcat"
 
 # Create mini webserver
@@ -99,16 +99,16 @@ alias myIp="curl -sSL 'https://api.ipify.org?format=json' | json"
 alias isTor="curl -sSL 'https://check.torproject.org/api/ip' | json"
 
 # Check location of a ip
-trackIp () { curl -sSL "http://ip-api.com/json/$1" | json}
+trackIp () curl -sSL "http://ip-api.com/json/$1" | json
 
 # Send text to termbin (like pastebin)
 alias tb="nc termbin.com 9999"
 
 # Expose local servers to the internet (80:0.0.0.0:80)
-expose () { ssh -R "$1" serveo.net }
+expose () ssh -R "$1" serveo.net
 
 # Unshorten url
-unshorten () { curl -sSL "https://unshorten.me/json/$1" | json}
+unshorten () curl -sSL "https://unshorten.me/json/$1" | json
 
 # Scan file with virus total
 scanFileWithVirusTotal () {
