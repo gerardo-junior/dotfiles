@@ -115,13 +115,13 @@ unshorten () { curl -sSL "https://unshorten.me/json/$1" | json }
 # Scan file with virus total
 scanFileWithVirusTotal () {
     curl -sSL -F "file=@$1" -F \
-    apikey='' \
+    apikey='[API KEY]' \
     https://www.virustotal.com/vtapi/v2/file/scan | json
 }
 
 scanUrlWithVirusTotal () {
     curl -sSL --request POST \
     --url 'https://www.virustotal.com/vtapi/v2/url/scan' \
-    -d apikey='' \
+    -d apikey='[API KEY]' \
     -d "url=$1" | json
 }
