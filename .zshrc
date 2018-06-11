@@ -86,6 +86,8 @@ extract () {
     fi
 }
 
+# Configure grep
+alias grep='grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn} --exclude="*.pyc"'
 
 # Output code with highlight
 highlight () vimcat -c "set syntax=$1" -- $2
