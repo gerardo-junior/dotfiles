@@ -1,16 +1,30 @@
 [user]
-	name = Gerardo Junior
 	email = me@gerardo-junior.com
+	name = Gerardo Junior
+[commit]
+	gpgsign = true
+[alias]
+	cloner = clone --recursive
+	unstage = reset HEAD --
+	last = log -1 HEAD
+[diff]
+	tool = vimdiff
 [core]
 	editor = vim
+[rebase]
+	autosquash = true
 [merge]
 	tool = vimdiff
-[alias]
-    uncommit = reset --soft HEAD~
-    unstage = reset HEAD --
+[filter "lfs"]
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
+	clean = git-lfs clean -- %f
 [url "ssh://git@github.com/"]
 	insteadOf = https://github.com/
 [url "ssh://git@gitlab.com/"]
 	insteadOf = https://gitlab.com/
 [url "ssh://git@bitbucket.org/"]
 	insteadOf = https://bitbucket.org/
+[url "ssh://git@heroku.com/"]
+	insteadOf = https://heroku.com/
