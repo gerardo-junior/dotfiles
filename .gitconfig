@@ -1,6 +1,7 @@
 [user]
 	email = me@gerardo-junior.com
 	name = Gerardo Junior
+	signingKey = 51C3F05167A4F65E9600AC8EE4FEB7D986218CA7
 [commit]
 	gpgsign = true
 [alias]
@@ -28,3 +29,5 @@
 	insteadOf = https://bitbucket.org/
 [url "ssh://git@heroku.com/"]
 	insteadOf = https://heroku.com/
+[tag]
+	forceSignAnnotated = true
