@@ -1,0 +1,19 @@
+Host aur.archlinux.org
+  IdentityFile ~/.ssh/aur
+  User aur
+
+Host heroku.com
+  IdentityFile ~/.ssh/heroku
+  User git
+
+Host gitlab.com
+  IdentityFile ~/.ssh/gitlab
+  User git
+
+Host bitbucket.org
+  IdentityFile ~/.ssh/bitbucket
+  User gerardo-junior
+
+Host github.com
+  IdentityFile ~/.ssh/github
+  User git
