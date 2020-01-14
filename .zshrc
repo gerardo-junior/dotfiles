@@ -138,13 +138,13 @@ sudo rm -Rf /var/cache/pacman/pkg/* && sudo rm -Rf /tmp/trizen-$(whoami)/* }
 # Scan file with virus total
 scanFileWithVirusTotal () {
     curl -sSL -F "file=@$1" -F \
-    apikey='' \
+    apikey=$VIRUS_TOTAL_KEY \
     https://www.virustotal.com/vtapi/v2/file/scan
 }
 
 scanUrlWithVirusTotal () {
     curl -sSL --request POST \
     --url 'https://www.virustotal.com/vtapi/v2/url/scan' \
-    -d apikey='' \
+    -d apikey=$VIRUS_TOTAL_KEY \
     -d "url=$1"
 }
