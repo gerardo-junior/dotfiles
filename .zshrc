@@ -14,7 +14,6 @@ if [[ $- = *i* ]]; then
 
 fi
 
-source /etc/profile.d/android-ndk.sh
 source ${HOME}/.env
 
 if ! (systemctl -q is-active docker.service) then
@@ -109,8 +108,8 @@ composer () {
 alias grep='grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn} --exclude="*.pyc"'
 
 # Output code with highlight
-highlight () vimcat -c "set syntax=$1" -- $2
-alias ccat="vimcat"
+alias ls=lsd
+alias cat=bat
 
 # Create mini webserver
 alias webserver="python -m http.server"
@@ -130,10 +129,6 @@ alias tb="nc termbin.com 9999"
 # Unshorten url
 unshorten () { curl -sSL "https://unshorten.me/json/$1" }
 
-# Updating system
-update-system () { sudo mount -o remount,size=16G,noatime /tmp/trizen-$(whoami); sudo prlimit --pid $$ --nofile=10000:10000 &&
-trizen -Syyu --noconfirm && while :; do sudo pacman -R --noconfirm $(pacman -Qdtq) || break; sleep 10; done &&
-sudo rm -Rf /var/cache/pacman/pkg/* && sudo rm -Rf /tmp/trizen-$(whoami)/* }
 
 # Scan file with virus total
 scanFileWithVirusTotal () {
