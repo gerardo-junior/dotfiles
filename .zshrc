@@ -1,7 +1,8 @@
 # If not running interactively, don't do anything
 if [[ $- = *i* ]]; then
     # Configure antigen
-    source /usr/share/zsh/share/antigen.zsh
+    [[ ! -d "$HOME/.antigen" ]] && git clone https://github.com/zsh-users/antigen.git "$HOME/.antigen"
+    source "$HOME/.antigen/antigen.zsh"
 
     antigen use oh-my-zsh
     antigen bundle git
