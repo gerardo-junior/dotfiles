@@ -19,7 +19,7 @@ if [[ $- = *i* ]]; then
 
 fi
 
-source ${HOME}/.env
+[[ -f "$HOME/.env" ]] && source ${HOME}/.env
 
 # Pretty print formt
 alias json="python -m json.tool"
