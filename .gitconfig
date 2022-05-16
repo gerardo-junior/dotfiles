@@ -4,30 +4,27 @@
 	signingKey = 51C3F05167A4F65E9600AC8EE4FEB7D986218CA7
 [commit]
 	gpgsign = true
+[tag]
+	forceSignAnnotated = true
 [alias]
 	cloner = clone --recursive
 	unstage = reset HEAD --
 	last = log -1 HEAD
-[diff]
-	tool = vimdiff
-[core]
-	editor = vim
+	
 [rebase]
 	autosquash = true
-[merge]
-	tool = vimdiff
+	
 [filter "lfs"]
 	smudge = git-lfs smudge -- %f
 	process = git-lfs filter-process
 	required = true
 	clean = git-lfs clean -- %f
+	
 [url "ssh://git@github.com/"]
 	insteadOf = https://github.com/
 [url "ssh://git@gitlab.com/"]
 	insteadOf = https://gitlab.com/
-[url "ssh://git@bitbucket.org/"]
+[url "ssh://gerardo-junior@bitbucket.org/"]
 	insteadOf = https://bitbucket.org/
 [url "ssh://git@heroku.com/"]
 	insteadOf = https://heroku.com/
-[tag]
-	forceSignAnnotated = true
