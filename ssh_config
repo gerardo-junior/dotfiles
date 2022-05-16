@@ -17,3 +17,8 @@ Host bitbucket.org
 Host github.com
   IdentityFile ~/.ssh/github
   User git
+  
+Host tunnel.*.ngrok.com
+  IdentityFile ~/.ssh/ngrok
+  HostkeyAlgorithms +ssh-rsa
+  PubkeyAcceptedAlgorithms +ssh-rsa
