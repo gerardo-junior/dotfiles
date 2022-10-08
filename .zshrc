@@ -12,7 +12,6 @@ if [[ $- = *i* ]]; then
     fi
     
     . $HOME/.asdf/asdf.sh
-    . $HOME/.asdf/completions/asdf.bash
 
     # Configure antigen
     [[ ! -d "$HOME/.antigen" ]] && git clone https://github.com/zsh-users/antigen.git "$HOME/.antigen"
