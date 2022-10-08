@@ -1,5 +1,17 @@
 # If not running interactively, don't do anything
 if [[ $- = *i* ]]; then
+    
+    if [[ ! -d "$HOME/.asdf" ]] then 
+        git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.10.2
+        
+        for p in $(cut -d " " $HOME/.tool-versions -f1); do asdf plugin add $p; done
+        
+        asdf install > /dev/null 2>&1 &
+    fi
+    
+    . $HOME/.asdf/asdf.sh
+    . $HOME/.asdf/completions/asdf.bash
+
     # Configure antigen
     [[ ! -d "$HOME/.antigen" ]] && git clone https://github.com/zsh-users/antigen.git "$HOME/.antigen"
     source "$HOME/.antigen/antigen.zsh"
@@ -19,7 +31,8 @@ if [[ $- = *i* ]]; then
 
 fi
 
-[[ -f "$HOME/.env" ]] && source ${HOME}/.env
+[[ ! -f "$HOME/.env" ]] && touch "$HOME/.env" 
+source ${HOME}/.env
 
 # Pretty print formt
 alias json="python -m json.tool"
@@ -84,9 +97,6 @@ extract () {
         echo "ERROR: '$1' is not a valid file"; return 1
     fi
 }
-
-# Send text to termbin (like pastebin)
-alias tb="nc termbin.com 9999"
 
 # Unshorten url
 unshorten () { curl -sSL "https://unshorten.me/json/$1" }
