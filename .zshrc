@@ -4,9 +4,11 @@ if [[ $- = *i* ]]; then
     if [[ ! -d "$HOME/.asdf" ]] then 
         git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.10.2
         
-        for p in $(cut -d " " $HOME/.tool-versions -f1); do asdf plugin add $p; done
+        if [[ ! -d "$HOME/.tool-versions " ]] then 
+            for p in $(cut -d " " $HOME/.tool-versions -f1); do asdf plugin add $p; done
         
-        asdf install > /dev/null 2>&1 &
+            asdf install > /dev/null 2>&1 &
+        fi
     fi
     
     . $HOME/.asdf/asdf.sh
