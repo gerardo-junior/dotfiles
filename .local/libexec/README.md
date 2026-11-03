@@ -31,6 +31,9 @@ The timer runs without a terminal, so:
 - a headset sitting on an HFP profile is treated as **in use** and left alone,
   so the watchdog cannot cut a call;
 - after a failed attempt the next one waits ten minutes (`RECOVERY_COOLDOWN`);
+- a power cycle is never left half-done: the adapter is only considered back
+  when `bluetoothctl show` reports `Powered: yes`, and the script waits for
+  WirePlumber to re-register the BlueZ endpoints before calling a card broken;
 - syslog only gets a line when the outcome changes, not every two minutes;
 - a `mkdir` lock keeps two invocations from overlapping.
 

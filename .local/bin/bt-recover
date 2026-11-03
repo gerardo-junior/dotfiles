@@ -36,6 +36,7 @@ LOG="$STATE_DIR/history.log"
 LAST_DEVICE_FILE="$STATE_DIR/last-audio-device"
 LAST_STATUS_FILE="$STATE_DIR/last-status"
 COOLDOWN_FILE="$STATE_DIR/last-attempt"
+PENDING_FILE="$STATE_DIR/pending-recovery"
 LOCK_DIR="$STATE_DIR/lock"
 LOG_MAX_LINES=500
 
@@ -143,6 +144,37 @@ wait_for_bluez_sink() {
   return 1
 }
 
+# WirePlumber registers the BlueZ media endpoints a moment after the device
+# connects. Acting in that window looks exactly like a broken card and would
+# power-cycle a perfectly healthy adapter.
+wait_for_bluez_card() {
+  n=0
+  while [ "$n" -lt 10 ]; do
+    [ -n "$(bluez_cards || true)" ] && return 0
+    sleep 1
+    n=$((n + 1))
+  done
+  return 1
+}
+
+adapter_powered() {
+  bluetoothctl show 2>/dev/null | grep -q 'Powered: yes'
+}
+
+# A power cycle must never be left half-done: bluetoothctl reports the request
+# before the controller is actually up, and an adapter that stays off takes the
+# whole audio path with it.
+power_on_verified() {
+  n=0
+  while [ "$n" -lt 15 ]; do
+    adapter_powered && return 0
+    bluetoothctl power on >/dev/null 2>&1 || true
+    sleep 1
+    n=$((n + 1))
+  done
+  adapter_powered
+}
+
 # 0 = healthy, 1 = broken (recoverable), 2 = on a headset profile and
 # possibly in use (a call) — report it, do not touch it.
 # Pass "quiet" to suppress the informational lines.
@@ -152,6 +184,10 @@ audit_audio() {
   inuse=0
 
   if [ -z "$(audio_devices Connected || true)" ]; then
+    if pending_active; then
+      warn "no device connected and a recovery is still pending (adapter left off?)"
+      return 1
+    fi
     [ -n "$quiet" ] || say "no connected Bluetooth audio device"
     return 0
   fi
@@ -184,6 +220,16 @@ audit_audio() {
 
   if [ "$broken" -eq 1 ]; then return 1; fi
   if [ "$inuse" -eq 1 ]; then return 2; fi
+  return 0
+}
+
+pending_active() {
+  [ -f "$PENDING_FILE" ] || return 1
+  # Do not chase a device that simply is not around: the marker expires.
+  if [ "$(find "$PENDING_FILE" -mmin +15 2>/dev/null | wc -l)" -eq 1 ]; then
+    rm -f "$PENDING_FILE"
+    return 1
+  fi
   return 0
 }
 
@@ -242,8 +288,11 @@ light_recover() {
   say ">> power-cycling the controller (BlueZ re-discovers the A2DP SEPs)"
   bluetoothctl power off >/dev/null 2>&1 || true
   sleep 2
-  bluetoothctl power on >/dev/null 2>&1 || true
-  sleep 3
+  if ! power_on_verified; then
+    warn "controller did not come back after the power cycle"
+    return 1
+  fi
+  sleep 2
 
   if [ -z "$targets" ]; then
     targets=$(audio_devices Paired || true)
@@ -350,7 +399,7 @@ INTERACTIVE=1
 for arg in "$@"; do
   case "$arg" in
     --light) mode=light ;;
-    --full) mode=full ;;
+    --full) mode=full; INTERACTIVE=1 ;;
     --check) mode=check ;;
     --test) run_test=1 ;;
     --quiet) QUIET=1 ;;
@@ -386,6 +435,13 @@ if [ "$mode" = auto ]; then
   else
     rc=0
     audit_audio quiet || rc=$?
+    # A connected device or a restarted audio stack re-registers the BlueZ
+    # media endpoints a moment later. Acting inside that window looks exactly
+    # like a broken card and would power-cycle a healthy adapter.
+    if [ "$rc" -eq 1 ] && [ -z "$(bluez_cards || true)" ] && wait_for_bluez_card; then
+      rc=0
+      audit_audio quiet || rc=$?
+    fi
     case "$rc" in
       0)
         publish ok
@@ -409,6 +465,9 @@ if [ "$mode" = light ] && ! cooldown_ok; then
   exit 0
 fi
 
+# Mark the attempt so a half-finished recovery cannot be read as healthy.
+: >"$PENDING_FILE"
+
 # Only an unattended attempt arms the cooldown; a manual run must not
 # suppress the watchdog for the next ten minutes.
 if [ "$INTERACTIVE" -eq 0 ]; then
@@ -417,7 +476,7 @@ fi
 
 case "$mode" in
   light)
-    light_recover
+    light_recover || warn "light recovery did not complete"
     if ! audit_audio quiet; then
       say "light recovery did not restore audio; escalating"
       mode=full
@@ -431,7 +490,7 @@ rc=0
 audit_audio || rc=$?
 case "$rc" in
   0)
-    rm -f "$COOLDOWN_FILE"
+    rm -f "$COOLDOWN_FILE" "$PENDING_FILE"
     publish recovered
     say "done: audio path recovered"
     if [ "$run_test" -eq 1 ]; then play_test || exit 1; fi

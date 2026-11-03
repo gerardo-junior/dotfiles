@@ -47,6 +47,16 @@ log "PipeWire control interface did not respond within ${probe_timeout}s; restar
 if timeout "${recovery_timeout}s" systemctl --user restart wireplumber pipewire pipewire-pulse; then
   if timeout "${probe_timeout}s" wpctl status >/dev/null 2>&1; then
     log "PipeWire recovered successfully"
+    # WirePlumber re-registers the BlueZ media endpoints only after the graph
+    # is back; probing too early looks like a broken card and would power-cycle
+    # a healthy adapter.
+    n=0
+    while [ "$n" -lt 10 ]; do
+      pactl list short cards >/dev/null 2>&1 && break
+      sleep 1
+      n=$((n + 1))
+    done
+    sleep 3
     check_bluetooth
     exit 0
   fi
