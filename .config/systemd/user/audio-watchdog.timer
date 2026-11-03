@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically check the PipeWire audio control interface
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*:0/2
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

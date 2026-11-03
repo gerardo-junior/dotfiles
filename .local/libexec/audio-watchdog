@@ -1,0 +1,56 @@
+#!/bin/sh
+# Audio health check, run by audio-watchdog.timer every two minutes.
+#
+# Two independent failures are covered:
+#
+#   1. PipeWire's user-session control interface stops answering. The timer
+#      restarts the whole audio graph (WirePlumber, PipeWire, pulse shim).
+#
+#   2. The Bluetooth A2DP path breaks while PipeWire stays healthy: BlueZ
+#      loses the remote endpoint cache and the card keeps only HFP/HSP. That
+#      is what bt-recover handles, including the ten-minute back-off and the
+#      refusal to switch a headset that is in use.
+#
+# Everything here must be safe to run unattended: no prompts, no output when
+# there is nothing to do. See README.md in this directory.
+
+set -eu
+
+tag=audio-watchdog
+probe_timeout=5
+recovery_timeout=45
+
+# User units do not have ~/.local/bin in PATH.
+BT_RECOVER="${BT_RECOVER:-$HOME/.local/bin/bt-recover}"
+
+log() {
+  logger -t "$tag" -- "$*"
+}
+
+check_bluetooth() {
+  [ -x "$BT_RECOVER" ] || return 0
+  # bt-recover is idempotent: on a healthy graph it probes and exits, and it
+  # never asks for a password unless it was given a terminal.
+  timeout 120s "$BT_RECOVER" --unattended --quiet || true
+}
+
+if timeout "${probe_timeout}s" wpctl status >/dev/null 2>&1; then
+  check_bluetooth
+  exit 0
+fi
+
+log "PipeWire control interface did not respond within ${probe_timeout}s; restarting the audio stack"
+
+# Restart the session manager and both PipeWire services together so clients reconnect
+# to a newly created audio graph. The timeout keeps this timer invocation bounded if a
+# kernel driver has a device stuck in uninterruptible I/O.
+if timeout "${recovery_timeout}s" systemctl --user restart wireplumber pipewire pipewire-pulse; then
+  if timeout "${probe_timeout}s" wpctl status >/dev/null 2>&1; then
+    log "PipeWire recovered successfully"
+    check_bluetooth
+    exit 0
+  fi
+fi
+
+log "PipeWire is still unresponsive after recovery; reconnect the affected USB/Bluetooth audio device or reboot"
+exit 1

@@ -1,0 +1,449 @@
+#!/bin/sh
+# bt-recover — repair the Bluetooth audio path on artemis.
+#
+# Two failure modes are handled, escalating only as far as needed.
+#
+#   1. LIGHT — stale A2DP endpoint (SEP) cache in BlueZ.
+#      The controller is fine and the device still reconnects, but the
+#      bluez_card loses every A2DP profile (only HFP/HSP remain) and every
+#      stream dies with "spa.bluez5: Failure in Bluetooth audio transport"
+#      or "Input/output error". BlueZ logs:
+#        a2dp.c:load_remote_sep() Unable to load LastUsed: rseid N not found
+#      Fix: power-cycle the controller so BlueZ re-discovers the remote SEPs,
+#      then reconnect the device and put the card back on A2DP.
+#
+#   2. FULL — controller hung after a USB bus flap.
+#      `rfkill list` shows no hci0, `bluetoothctl show` prints nothing, kernel
+#      log has "Bluetooth: hci0: Failed to send firmware header (-110)".
+#      Fix: re-create the xHCI controller (needs root) and rebuild the audio
+#      graph, because WirePlumber is usually stuck in uninterruptible I/O.
+#      This path is interactive-only; a timer cannot answer the polkit prompt.
+#
+# Auto mode is what the audio-watchdog timer runs every two minutes: it never
+# prompts, never touches a headset that is in use, backs off for ten minutes
+# after a failed attempt, and only logs when the outcome changes.
+#
+# Usage: bt-recover [--check|--light|--full] [--test]
+#                   [--quiet] [--force] [--unattended|--interactive]
+# Exit:  0 healthy/recovered, 1 still broken, 2 bad usage.
+set -eu
+
+BT_USB_ID="${BT_USB_ID:-8087:}"        # Intel AX211 on artemis
+RECOVERY_COOLDOWN="${RECOVERY_COOLDOWN:-600}"   # seconds between auto attempts
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/bt-recover"
+LOG="$STATE_DIR/history.log"
+LAST_DEVICE_FILE="$STATE_DIR/last-audio-device"
+LAST_STATUS_FILE="$STATE_DIR/last-status"
+COOLDOWN_FILE="$STATE_DIR/last-attempt"
+LOCK_DIR="$STATE_DIR/lock"
+LOG_MAX_LINES=500
+
+QUIET=""
+mkdir -p "$STATE_DIR"
+
+logline() {
+  printf '%s\t%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG"
+  if [ -f "$LOG" ] && [ "$(wc -l <"$LOG")" -gt "$LOG_MAX_LINES" ]; then
+    tail -n "$((LOG_MAX_LINES - 100))" "$LOG" >"$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+  fi
+}
+say() {
+  [ -n "$QUIET" ] || printf '%s\n' "$*"
+  logline "$*"
+}
+warn() {
+  [ -n "$QUIET" ] || printf '!! %s\n' "$*" >&2
+  logline "!! $*"
+}
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Log to syslog only when the outcome actually changes, so a persistent fault
+# does not write a line every two minutes.
+publish() {
+  new=$1
+  detail=${2:-}
+  old=$(cat "$LAST_STATUS_FILE" 2>/dev/null || true)
+  [ "$new" = "$old" ] && return 0
+  printf '%s\n' "$new" >"$LAST_STATUS_FILE"
+  if have logger; then
+    logger -t bt-recover -- "$new${detail:+: $detail}"
+  fi
+}
+
+usage() {
+  cat <<EOF
+bt-recover — repair the Bluetooth audio path
+
+Usage:
+  bt-recover            detect the failure mode and recover (default)
+  bt-recover --light    controller power cycle only (stale A2DP SEP cache)
+  bt-recover --full     re-create the xHCI controller + rebuild the audio stack
+  bt-recover --check    report the current state, change nothing
+  bt-recover --test     play a short tone after recovering
+  bt-recover --quiet    log to file only (used by the timer)
+  bt-recover --force    ignore the recovery cooldown
+
+Log: $LOG
+EOF
+}
+
+# --- probing -------------------------------------------------------------
+
+controller_up() {
+  out=$(bluetoothctl show 2>/dev/null || true)
+  case "$out" in
+    *'Powered: yes'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# $1 = Connected | Paired
+audio_devices() {
+  bluetoothctl devices "$1" 2>/dev/null | awk '{print $2}' |
+    while read -r mac; do
+      [ -n "$mac" ] || continue
+      if bluetoothctl info "$mac" 2>/dev/null | grep -q 'Icon: audio-'; then
+        printf '%s\n' "$mac"
+      fi
+    done
+}
+
+bluez_cards() {
+  pactl list short cards 2>/dev/null | awk '$2 ~ /^bluez_card\./ {print $2}'
+}
+
+card_index() {
+  pactl list short cards 2>/dev/null | awk -v n="$1" '$2 == n {print $1; exit}'
+}
+
+card_block() {
+  idx=$(card_index "$1" || true)
+  [ -n "$idx" ] || return 1
+  pactl list cards 2>/dev/null | sed -n "/^Card #$idx\$/,/^Card #[0-9]*\$/p"
+}
+
+card_has_a2dp() {
+  card_block "$1" | grep -qE '^[[:space:]]+a2dp-sink(-sbc|-sbc_xq)?:'
+}
+
+card_active_profile() {
+  card_block "$1" | sed -n 's/^[[:space:]]*Active Profile:[[:space:]]*//p' | head -n 1
+}
+
+wait_for_bluez_sink() {
+  n=0
+  while [ "$n" -lt 10 ]; do
+    if pactl list short sinks 2>/dev/null | grep -q 'bluez_output\.'; then
+      return 0
+    fi
+    sleep 1
+    n=$((n + 1))
+  done
+  return 1
+}
+
+# 0 = healthy, 1 = broken (recoverable), 2 = on a headset profile and
+# possibly in use (a call) — report it, do not touch it.
+# Pass "quiet" to suppress the informational lines.
+audit_audio() {
+  quiet=${1:-}
+  broken=0
+  inuse=0
+
+  if [ -z "$(audio_devices Connected || true)" ]; then
+    [ -n "$quiet" ] || say "no connected Bluetooth audio device"
+    return 0
+  fi
+
+  cards=$(bluez_cards || true)
+  if [ -z "$cards" ]; then
+    warn "device is connected but no bluez card is exposed (audio path gone)"
+    return 1
+  fi
+
+  for card in $cards; do
+    profile=$(card_active_profile "$card" || true)
+    [ -n "$quiet" ] || say "card $card: active profile=${profile:-unknown}"
+    if ! card_has_a2dp "$card"; then
+      warn "card $card exposes no A2DP profile (stale BlueZ SEP cache)"
+      broken=1
+      continue
+    fi
+    case "$profile" in
+      a2dp-sink*) ;;
+      headset-*) inuse=1 ;;
+      *) broken=1 ;;
+    esac
+  done
+
+  if ! pactl list short sinks 2>/dev/null | grep -q 'bluez_output\.'; then
+    warn "no bluez_output sink present"
+    broken=1
+  fi
+
+  if [ "$broken" -eq 1 ]; then return 1; fi
+  if [ "$inuse" -eq 1 ]; then return 2; fi
+  return 0
+}
+
+# --- recovery ------------------------------------------------------------
+
+remember_devices() {
+  [ $# -gt 0 ] || return 0
+  printf '%s\n' "$@" >"$LAST_DEVICE_FILE"
+}
+
+ensure_a2dp() {
+  for card in $(bluez_cards || true); do
+    case "$(card_active_profile "$card" || true)" in
+      a2dp-sink*) continue ;;
+    esac
+    for want in a2dp-sink a2dp-sink-sbc_xq a2dp-sink-sbc; do
+      if card_block "$card" | grep -qE "^[[:space:]]+$want:"; then
+        say ">> selecting $want on $card"
+        pactl set-card-profile "$card" "$want" >/dev/null 2>&1 || true
+        sleep 2
+        break
+      fi
+    done
+  done
+  wait_for_bluez_sink || warn "no bluez_output sink appeared"
+}
+
+# Only adopt the Bluetooth sink when there is no usable default sink. A
+# watchdog must not steal audio from speakers the user picked on purpose.
+ensure_default_sink() {
+  sink=$(pactl list short sinks 2>/dev/null |
+    awk '$2 ~ /^bluez_output\./ {print $2; exit}')
+  [ -n "$sink" ] || return 0
+  current=$(pactl get-default-sink 2>/dev/null || true)
+  if [ -n "$current" ] &&
+    pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qxF "$current"; then
+    return 0
+  fi
+  say ">> setting default sink to $sink"
+  pactl set-default-sink "$sink" >/dev/null 2>&1 || true
+}
+
+reconnect() {
+  for mac in $1; do
+    say ">> reconnecting $mac"
+    bluetoothctl connect "$mac" >/dev/null 2>&1 || warn "connect $mac failed"
+  done
+}
+
+light_recover() {
+  targets=$(audio_devices Connected || true)
+  if [ -z "$targets" ]; then
+    targets=$(cat "$LAST_DEVICE_FILE" 2>/dev/null || true)
+  fi
+
+  say ">> power-cycling the controller (BlueZ re-discovers the A2DP SEPs)"
+  bluetoothctl power off >/dev/null 2>&1 || true
+  sleep 2
+  bluetoothctl power on >/dev/null 2>&1 || true
+  sleep 3
+
+  if [ -z "$targets" ]; then
+    targets=$(audio_devices Paired || true)
+  fi
+
+  reconnect "$targets"
+  sleep 5
+  ensure_a2dp
+  ensure_default_sink
+  remember_devices $targets
+}
+
+full_recover() {
+  if [ "$INTERACTIVE" -eq 0 ]; then
+    warn "controller recovery needs root and a terminal; run 'bt-recover --full' by hand"
+    return 1
+  fi
+
+  say ">> re-creating the xHCI controller (authentication required)"
+  if ! pkexec sh -c 'printf 1 > /sys/bus/pci/devices/0000:00:14.0/remove; sleep 5; printf 1 > /sys/bus/pci/rescan'; then
+    warn "authentication failed or cancelled; not touching the controller"
+    return 1
+  fi
+  sleep 20
+
+  if ! lsusb 2>/dev/null | grep -q "$BT_USB_ID"; then
+    warn "Bluetooth USB device did not come back; a full power cycle is required"
+    return 1
+  fi
+
+  say ">> rebuilding the audio stack"
+  pkill -9 -f '/usr/bin/wireplumber' || true
+  pkill -9 -f '/usr/bin/pipewire' || true
+  sleep 3
+  systemctl --user reset-failed || true
+  systemctl --user start pipewire.socket pipewire-pulse.socket \
+    pipewire.service wireplumber.service pipewire-pulse.service || true
+  sleep 5
+
+  if ! controller_up; then
+    say ">> powering the controller on"
+    bluetoothctl power on >/dev/null 2>&1 || true
+    sleep 3
+  fi
+
+  targets=$(cat "$LAST_DEVICE_FILE" 2>/dev/null || true)
+  if [ -z "$targets" ]; then
+    targets=$(audio_devices Paired || true)
+  fi
+  reconnect "$targets"
+  sleep 5
+  ensure_a2dp
+  ensure_default_sink
+  remember_devices $targets
+}
+
+play_test() {
+  if ! have speaker-test; then
+    warn "speaker-test unavailable; skipping the tone"
+    return 0
+  fi
+  say ">> playing a test tone on the default sink"
+  if speaker-test -t sine -f 440 -l 1 >/dev/null 2>&1; then
+    say ">> tone played"
+  else
+    warn "test tone failed"
+    return 1
+  fi
+}
+
+cooldown_ok() {
+  [ -n "$FORCE" ] && return 0
+  [ "$INTERACTIVE" -eq 1 ] && return 0
+  [ -f "$COOLDOWN_FILE" ] || return 0
+  last=$(cat "$COOLDOWN_FILE" 2>/dev/null || echo 0)
+  case "$last" in *[!0-9]*) last=0 ;; esac
+  now=$(date +%s)
+  [ "$((now - last))" -ge "$RECOVERY_COOLDOWN" ]
+}
+
+take_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
+    return 0
+  fi
+  # Clear a lock abandoned by a killed run.
+  if [ -d "$LOCK_DIR" ] && [ "$(find "$LOCK_DIR" -maxdepth 0 -mmin +5 2>/dev/null | wc -l)" -eq 1 ]; then
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    mkdir "$LOCK_DIR" 2>/dev/null || return 1
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
+    return 0
+  fi
+  return 1
+}
+
+# --- main ----------------------------------------------------------------
+
+mode=auto
+run_test=0
+FORCE=""
+INTERACTIVE=1
+[ -t 0 ] || INTERACTIVE=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --light) mode=light ;;
+    --full) mode=full ;;
+    --check) mode=check ;;
+    --test) run_test=1 ;;
+    --quiet) QUIET=1 ;;
+    --force) FORCE=1 ;;
+    --unattended) INTERACTIVE=0 ;;
+    --interactive) INTERACTIVE=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'bt-recover: unknown argument: %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+
+if [ "$mode" = check ]; then
+  rc=0
+  audit_audio || rc=$?
+  case "$rc" in
+    0) say "status: ok"; exit 0 ;;
+    2) say "status: degraded (headset profile, possibly in use)" ;;
+    *) say "status: broken" ;;
+  esac
+  exit 1
+fi
+
+take_lock || { warn "another bt-recover is running; skipping"; exit 0; }
+
+if [ "$mode" = auto ]; then
+  if ! controller_up; then
+    if [ "$INTERACTIVE" -eq 0 ]; then
+      publish blocked "controller is down; privileged recovery required"
+      exit 0
+    fi
+    say "controller is down -> full recovery"
+    mode=full
+  else
+    rc=0
+    audit_audio quiet || rc=$?
+    case "$rc" in
+      0)
+        publish ok
+        if [ "$run_test" -eq 1 ]; then play_test || exit 1; fi
+        exit 0
+        ;;
+      2)
+        publish in-use "headset profile active; not touching it"
+        say "card is on a headset profile (call in progress?); leaving it alone"
+        exit 0
+        ;;
+    esac
+    say "A2DP path is broken -> light recovery"
+    mode=light
+  fi
+fi
+
+if [ "$mode" = light ] && ! cooldown_ok; then
+  publish cooldown "recovery attempted recently; waiting"
+  say "recovery attempted less than ${RECOVERY_COOLDOWN}s ago; waiting"
+  exit 0
+fi
+
+# Only an unattended attempt arms the cooldown; a manual run must not
+# suppress the watchdog for the next ten minutes.
+if [ "$INTERACTIVE" -eq 0 ]; then
+  date +%s >"$COOLDOWN_FILE"
+fi
+
+case "$mode" in
+  light)
+    light_recover
+    if ! audit_audio quiet; then
+      say "light recovery did not restore audio; escalating"
+      mode=full
+      full_recover || true
+    fi
+    ;;
+  full) full_recover || true ;;
+esac
+
+rc=0
+audit_audio || rc=$?
+case "$rc" in
+  0)
+    rm -f "$COOLDOWN_FILE"
+    publish recovered
+    say "done: audio path recovered"
+    if [ "$run_test" -eq 1 ]; then play_test || exit 1; fi
+    exit 0
+    ;;
+  2)
+    publish in-use "headset profile active; not touching it"
+    exit 0
+    ;;
+esac
+
+publish broken "recovery did not restore the audio path"
+warn "still broken; try: bt-recover --full"
+[ "$INTERACTIVE" -eq 1 ] && exit 1
+exit 0

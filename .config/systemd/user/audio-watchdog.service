@@ -1,0 +1,8 @@
+[Unit]
+Description=Recover PipeWire when its control interface stops responding
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/libexec/audio-watchdog
+# The PipeWire probe/restart plus a Bluetooth A2DP recovery can take a while.
+TimeoutStartSec=110s
