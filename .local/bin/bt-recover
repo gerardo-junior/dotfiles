@@ -144,19 +144,6 @@ wait_for_bluez_sink() {
   return 1
 }
 
-# WirePlumber registers the BlueZ media endpoints a moment after the device
-# connects. Acting in that window looks exactly like a broken card and would
-# power-cycle a perfectly healthy adapter.
-wait_for_bluez_card() {
-  n=0
-  while [ "$n" -lt 10 ]; do
-    [ -n "$(bluez_cards || true)" ] && return 0
-    sleep 1
-    n=$((n + 1))
-  done
-  return 1
-}
-
 adapter_powered() {
   bluetoothctl show 2>/dev/null | grep -q 'Powered: yes'
 }
@@ -180,12 +167,13 @@ power_on_verified() {
 # Pass "quiet" to suppress the informational lines.
 audit_audio() {
   quiet=${1:-}
+  silent=${2:-}
   broken=0
   inuse=0
 
   if [ -z "$(audio_devices Connected || true)" ]; then
     if pending_active; then
-      warn "no device connected and a recovery is still pending (adapter left off?)"
+      [ -n "$silent" ] || warn "no device connected and a recovery is still pending (adapter left off?)"
       return 1
     fi
     [ -n "$quiet" ] || say "no connected Bluetooth audio device"
@@ -194,7 +182,7 @@ audit_audio() {
 
   cards=$(bluez_cards || true)
   if [ -z "$cards" ]; then
-    warn "device is connected but no bluez card is exposed (audio path gone)"
+    [ -n "$silent" ] || warn "device is connected but no bluez card is exposed (audio path gone)"
     return 1
   fi
 
@@ -202,7 +190,7 @@ audit_audio() {
     profile=$(card_active_profile "$card" || true)
     [ -n "$quiet" ] || say "card $card: active profile=${profile:-unknown}"
     if ! card_has_a2dp "$card"; then
-      warn "card $card exposes no A2DP profile (stale BlueZ SEP cache)"
+      [ -n "$silent" ] || warn "card $card exposes no A2DP profile (stale BlueZ SEP cache)"
       broken=1
       continue
     fi
@@ -214,13 +202,28 @@ audit_audio() {
   done
 
   if ! pactl list short sinks 2>/dev/null | grep -q 'bluez_output\.'; then
-    warn "no bluez_output sink present"
+    [ -n "$silent" ] || warn "no bluez_output sink present"
     broken=1
   fi
 
   if [ "$broken" -eq 1 ]; then return 1; fi
   if [ "$inuse" -eq 1 ]; then return 2; fi
   return 0
+}
+
+# Profiles and endpoints show up a moment after a (re)connection. Power-cycling
+# inside that window breaks a healthy adapter and produces a recovery loop, so
+# re-check silently for a while before treating the path as broken.
+wait_for_audio_ready() {
+  n=0
+  while [ "$n" -lt 15 ]; do
+    rc=0
+    audit_audio quiet silent || rc=$?
+    [ "$rc" -ne 1 ] && return 0
+    sleep 1
+    n=$((n + 1))
+  done
+  return 1
 }
 
 pending_active() {
@@ -245,7 +248,7 @@ ensure_a2dp() {
     case "$(card_active_profile "$card" || true)" in
       a2dp-sink*) continue ;;
     esac
-    for want in a2dp-sink a2dp-sink-sbc_xq a2dp-sink-sbc; do
+    for want in a2dp-sink-sbc_xq a2dp-sink a2dp-sink-sbc; do
       if card_block "$card" | grep -qE "^[[:space:]]+$want:"; then
         say ">> selecting $want on $card"
         pactl set-card-profile "$card" "$want" >/dev/null 2>&1 || true
@@ -438,7 +441,7 @@ if [ "$mode" = auto ]; then
     # A connected device or a restarted audio stack re-registers the BlueZ
     # media endpoints a moment later. Acting inside that window looks exactly
     # like a broken card and would power-cycle a healthy adapter.
-    if [ "$rc" -eq 1 ] && [ -z "$(bluez_cards || true)" ] && wait_for_bluez_card; then
+    if [ "$rc" -eq 1 ] && wait_for_audio_ready; then
       rc=0
       audit_audio quiet || rc=$?
     fi

@@ -55,3 +55,6 @@ History and state live in `~/.local/state/bt-recover/`.
   `bt-recover --full`.
 - The A2DP cache recovery is a workaround for a BlueZ bug, not a cure: it will
   keep happening occasionally until BlueZ handles stale remote SEPs properly.
+- The FreeBuds Pro 5 drop the A2DP transport within minutes when negotiated with
+  **AAC**, which is what used to feed the cache bug. `50-bluez-codecs.conf` pins
+  the card to SBC/SBC-XQ; without it the recovery loop comes back.
