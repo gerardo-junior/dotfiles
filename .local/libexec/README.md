@@ -56,5 +56,10 @@ History and state live in `~/.local/state/bt-recover/`.
 - The A2DP cache recovery is a workaround for a BlueZ bug, not a cure: it will
   keep happening occasionally until BlueZ handles stale remote SEPs properly.
 - The FreeBuds Pro 5 drop the A2DP transport within minutes when negotiated with
-  **AAC**, which is what used to feed the cache bug. `50-bluez-codecs.conf` pins
-  the card to SBC/SBC-XQ; without it the recovery loop comes back.
+  **AAC**, which is what used to feed the cache bug. `50-bluez-codecs.conf`
+  excludes AAC and prefers LDAC, falling back to SBC-XQ/SBC.
+- LDAC only appears once the earbuds advertise it: they must be in Huawei's
+  "prioritize sound quality" mode with multipoint off. Until then the AVDTP
+  capability list contains SBC and AAC only, and SBC-XQ (~452 kbps) is the
+  ceiling. L2HC (2.3 Mbps) and NearLink (4.6 Mbps) are Huawei-proprietary and
+  cannot be used from Linux.
