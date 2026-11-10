@@ -248,14 +248,30 @@ ensure_a2dp() {
     case "$(card_active_profile "$card" || true)" in
       a2dp-sink*) continue ;;
     esac
-    for want in a2dp-sink-sbc_xq a2dp-sink a2dp-sink-sbc; do
-      if card_block "$card" | grep -qE "^[[:space:]]+$want:"; then
-        say ">> selecting $want on $card"
-        pactl set-card-profile "$card" "$want" >/dev/null 2>&1 || true
-        sleep 2
-        break
-      fi
-    done
+    # Restore the best codec, not the highest profile priority: PipeWire ranks
+    # plain SBC above SBC-XQ, and LDAC must win over both.
+    want=$(card_block "$card" | awk '
+      /^[[:space:]]*a2dp-sink/ && /available: yes/ {
+        line = $0
+        sub(/^[[:space:]]*/, "", line)
+        name = line; sub(/:.*/, "", name)
+        codec = ""
+        if (match(line, /codec [A-Za-z0-9_-]+/))
+          codec = toupper(substr(line, RSTART + 6, RLENGTH - 6))
+        rank = 0
+        if (codec == "LDAC") rank = 6
+        else if (codec == "APTX-HD") rank = 5
+        else if (codec == "APTX") rank = 4
+        else if (codec == "SBC-XQ") rank = 3
+        else if (codec == "SBC") rank = 2
+        else if (codec == "AAC") rank = 1
+        if (rank > 0) print rank, name
+      }' | sort -rn | head -n 1 | awk '{print $2}')
+    if [ -n "$want" ]; then
+      say ">> selecting $want on $card"
+      pactl set-card-profile "$card" "$want" >/dev/null 2>&1 || true
+      sleep 2
+    fi
   done
   wait_for_bluez_sink || warn "no bluez_output sink appeared"
 }
